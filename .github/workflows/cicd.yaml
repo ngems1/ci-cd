@@ -1,6 +1,6 @@
 # ============================================================
 # GitHub Actions - Standard Enterprise CI/CD Pipeline
-# File: .github/workflows/deploy.yml
+# File: .github/workflows/cicd.yaml
 # ============================================================
 
 name: Enterprise CI/CD Pipeline
@@ -21,8 +21,8 @@ on:
 # REQUIRED FOR OIDC: Grant write permissions for OIDC token
 # -------------------------------------------------------------
 permissions:
-  id-token: write   # Required to request JWT token from GitHub OIDC
-  contents: read    # Required to checkout repository code
+  id-token: write
+  contents: read
   pull-requests: write
 
 env:
@@ -36,16 +36,23 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       environment: ${{ steps.detect.outputs.environment }}
+
     steps:
       - name: Detect Target Environment
         id: detect
+        shell: bash
         run: |
+          set -euo pipefail
+
           if [[ "${GITHUB_REF_NAME}" == "dev" ]]; then
-            echo "environment=dev" >> $GITHUB_OUTPUT
+            echo "environment=dev" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.event.pull_request.base.ref }}" == "stage" ]]; then
-            echo "environment=stage" >> $GITHUB_OUTPUT
+            echo "environment=stage" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.event.pull_request.base.ref }}" == "prod" ]]; then
-            echo "environment=prod" >> $GITHUB_OUTPUT
+            echo "environment=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "Unable to determine deployment environment."
+            exit 1
           fi
 
   # -------------------------------------------------------------
@@ -55,6 +62,7 @@ jobs:
     name: Build Application
     needs: detect-environment
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -65,12 +73,20 @@ jobs:
       - name: Build Docker Image
         run: |
           echo "Building Docker image for environment: ${{ needs.detect-environment.outputs.environment }}"
-          docker build -t ${{ env.APP_NAME }}:${{ github.sha }} -f dockerfile .
+          docker build \
+            -t "${{ env.APP_NAME }}:${{ github.sha }}" \
+            -f dockerfile .
 
       - name: Export Docker Image to Tarball
+        shell: bash
         run: |
+          set -euo pipefail
+
           mkdir -p build-output
-          docker save ${{ env.APP_NAME }}:${{ github.sha }} -o build-output/${{ env.APP_NAME }}-${{ github.sha }}.tar
+
+          docker save \
+            "${{ env.APP_NAME }}:${{ github.sha }}" \
+            -o "build-output/${{ env.APP_NAME }}-${{ github.sha }}.tar"
 
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -79,20 +95,57 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Upload Image Tarball to AWS S3
+        env:
+          TARGET_ENV: ${{ needs.detect-environment.outputs.environment }}
+          S3_BUCKET_NAME: ${{ vars.S3_BUCKET_NAME }}
+        shell: bash
         run: |
-          TARGET_ENV="${{ needs.detect-environment.outputs.environment }}"
-          IMAGE_FILE="${{ env.APP_NAME }}-${{ github.sha }}.tar"
-          
-          echo "Uploading ${IMAGE_FILE} to s3://${{ vars.S3_BUCKET_NAME }}/${TARGET_ENV}/"
-          aws s3 cp build-output/${IMAGE_FILE} s3://${{ vars.S3_BUCKET_NAME }}/${TARGET_ENV}/${IMAGE_FILE}
+          set -euo pipefail
+
+          IMAGE_FILE="${APP_NAME}-${GITHUB_SHA}.tar"
+          SOURCE_FILE="build-output/${IMAGE_FILE}"
+
+          # Remove leading/trailing whitespace and an optional s3:// prefix.
+          BUCKET_NAME="$(printf '%s' "$S3_BUCKET_NAME" | xargs)"
+          BUCKET_NAME="${BUCKET_NAME#s3://}"
+          BUCKET_NAME="${BUCKET_NAME%/}"
+
+          # Fail early instead of passing a malformed destination to AWS CLI.
+          if [[ -z "$BUCKET_NAME" ]]; then
+            echo "S3_BUCKET_NAME is empty."
+            exit 1
+          fi
+
+          if [[ "$BUCKET_NAME" == *[[:space:]]* ]]; then
+            echo "S3_BUCKET_NAME contains whitespace: [$BUCKET_NAME]"
+            exit 1
+          fi
+
+          if [[ -z "$TARGET_ENV" ]]; then
+            echo "Target environment is empty."
+            exit 1
+          fi
+
+          if [[ ! -f "$SOURCE_FILE" ]]; then
+            echo "Image tarball does not exist: $SOURCE_FILE"
+            exit 1
+          fi
+
+          DESTINATION="s3://${BUCKET_NAME}/${TARGET_ENV}/${IMAGE_FILE}"
+
+          echo "Uploading ${SOURCE_FILE} to ${DESTINATION}"
+          aws s3 cp "$SOURCE_FILE" "$DESTINATION"
 
   # -------------------------------------------------------------
   # JOB 3: Testing Stage
   # -------------------------------------------------------------
   test:
     name: Execute Tests
-    needs: [detect-environment, build]
+    needs:
+      - detect-environment
+      - build
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -101,9 +154,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
 
       - name: Install & Run Tests
+        shell: bash
         run: |
+          set -euo pipefail
           npm ci
           npm test --if-present
 
@@ -112,13 +168,17 @@ jobs:
   # -------------------------------------------------------------
   deploy:
     name: Deploy
-    needs: [detect-environment, test]
+    needs:
+      - detect-environment
+      - test
     if: |
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
     runs-on: ubuntu-latest
+
     environment:
       name: ${{ needs.detect-environment.outputs.environment }}
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -135,6 +195,7 @@ jobs:
     needs: deploy
     if: always()
     runs-on: ubuntu-latest
+
     steps:
       - name: Notify Status
         run: |
