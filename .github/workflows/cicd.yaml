@@ -1,0 +1,126 @@
+# ============================================================
+# GitHub Actions - Standard Enterprise CI/CD Pipeline
+# File: .github/workflows/deploy.yml
+#
+# Pipeline Stages:
+#   1. Detect Environment
+#   2. Build (Docker)
+#   3. Test
+#   4. Deploy
+#
+# Deployment Strategy:
+#   - dev: Push trigger -> Auto Deploy
+#   - stage: PR Merged -> Auto Deploy
+#   - prod: PR Merged -> Manual Approval required (via GitHub Environment)
+# ============================================================
+
+name: Enterprise CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - dev
+
+  pull_request:
+    types:
+      - closed
+    branches:
+      - stage
+      - prod
+
+env:
+  APP_NAME: my-application
+
+jobs:
+  # -------------------------------------------------------------
+  # JOB 1: Detect Environment
+  # -------------------------------------------------------------
+  detect-environment:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.detect.outputs.environment }}
+    steps:
+      - name: Detect Target Environment
+        id: detect
+        run: |
+          if [[ "${GITHUB_REF_NAME}" == "dev" ]]; then
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event.pull_request.base.ref }}" == "stage" ]]; then
+            echo "environment=stage" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event.pull_request.base.ref }}" == "prod" ]]; then
+            echo "environment=prod" >> $GITHUB_OUTPUT
+          fi
+
+  # -------------------------------------------------------------
+  # JOB 2: Build Application
+  # -------------------------------------------------------------
+  build:
+    name: Build Application
+    needs: detect-environment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker Image
+        run: |
+          echo "Building Docker image for environment: ${{ needs.detect-environment.outputs.environment }}"
+          docker build -t ${{ env.APP_NAME }}:${{ github.sha }} -f dockerfile .
+
+  # -------------------------------------------------------------
+  # JOB 3: Testing Stage
+  # -------------------------------------------------------------
+  test:
+    name: Execute Tests
+    needs: [detect-environment, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install & Run Tests
+        run: |
+          npm ci
+          npm test --if-present
+
+  # -------------------------------------------------------------
+  # JOB 4: Deployment
+  # -------------------------------------------------------------
+  deploy:
+    name: Deploy
+    needs: [detect-environment, test]
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ needs.detect-environment.outputs.environment }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Deploy Application
+        run: |
+          echo "Deploying ${{ env.APP_NAME }} to target environment: ${{ needs.detect-environment.outputs.environment }}"
+          # Insert target environment deployment steps (e.g., kubectl, docker-compose, terraform)
+
+  # -------------------------------------------------------------
+  # JOB 5: Notification Job
+  # -------------------------------------------------------------
+  notify:
+    name: Notify Team
+    needs: deploy
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Status
+        run: |
+          echo "Sending deployment notification..."
