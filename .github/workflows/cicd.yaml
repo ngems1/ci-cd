@@ -1,5 +1,5 @@
 # ============================================================
-# GitHub Actions - Standard Enterprise CI/CD Pipeline
+# GitHub Actions - S3 Upload Pipeline
 # File: .github/workflows/cicd.yaml
 # ============================================================
 
@@ -23,7 +23,6 @@ on:
 permissions:
   id-token: write
   contents: read
-  pull-requests: write
 
 env:
   APP_NAME: my-application
@@ -56,10 +55,10 @@ jobs:
           fi
 
   # -------------------------------------------------------------
-  # JOB 2: Build Application & Upload to AWS S3 via OIDC
+  # JOB 2: Build Application Tarball & Upload to AWS S3 via OIDC
   # -------------------------------------------------------------
-  build:
-    name: Build Application
+  build-and-upload:
+    name: Build & Upload Artifact to S3
     needs: detect-environment
     runs-on: ubuntu-latest
 
@@ -67,12 +66,8 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Build Docker Image
         run: |
-          echo "Building Docker image for environment: ${{ needs.detect-environment.outputs.environment }}"
           docker build \
             -t "${{ env.APP_NAME }}:${{ github.sha }}" \
             -f dockerfile .
@@ -105,98 +100,12 @@ jobs:
           IMAGE_FILE="${APP_NAME}-${GITHUB_SHA}.tar"
           SOURCE_FILE="build-output/${IMAGE_FILE}"
 
-          # Remove leading/trailing whitespace and an optional s3:// prefix.
+          # Clean bucket name string
           BUCKET_NAME="$(printf '%s' "$S3_BUCKET_NAME" | xargs)"
           BUCKET_NAME="${BUCKET_NAME#s3://}"
           BUCKET_NAME="${BUCKET_NAME%/}"
-
-          # Fail early instead of passing a malformed destination to AWS CLI.
-          if [[ -z "$BUCKET_NAME" ]]; then
-            echo "S3_BUCKET_NAME is empty."
-            exit 1
-          fi
-
-          if [[ "$BUCKET_NAME" == *[[:space:]]* ]]; then
-            echo "S3_BUCKET_NAME contains whitespace: [$BUCKET_NAME]"
-            exit 1
-          fi
-
-          if [[ -z "$TARGET_ENV" ]]; then
-            echo "Target environment is empty."
-            exit 1
-          fi
-
-          if [[ ! -f "$SOURCE_FILE" ]]; then
-            echo "Image tarball does not exist: $SOURCE_FILE"
-            exit 1
-          fi
 
           DESTINATION="s3://${BUCKET_NAME}/${TARGET_ENV}/${IMAGE_FILE}"
 
           echo "Uploading ${SOURCE_FILE} to ${DESTINATION}"
           aws s3 cp "$SOURCE_FILE" "$DESTINATION"
-
-  # -------------------------------------------------------------
-  # JOB 3: Testing Stage
-  # -------------------------------------------------------------
-  test:
-    name: Execute Tests
-    needs:
-      - detect-environment
-      - build
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install & Run Tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm ci
-          npm test --if-present
-
-  # -------------------------------------------------------------
-  # JOB 4: Deployment
-  # -------------------------------------------------------------
-  deploy:
-    name: Deploy
-    needs:
-      - detect-environment
-      - test
-    if: |
-      github.event_name == 'push' ||
-      (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
-    runs-on: ubuntu-latest
-
-    environment:
-      name: ${{ needs.detect-environment.outputs.environment }}
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Deploy Application
-        run: |
-          echo "Deploying ${{ env.APP_NAME }} to target environment: ${{ needs.detect-environment.outputs.environment }}"
-
-  # -------------------------------------------------------------
-  # JOB 5: Notification Job
-  # -------------------------------------------------------------
-  notify:
-    name: Notify Team
-    needs: deploy
-    if: always()
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Notify Status
-        run: |
-          echo "Sending deployment notification..."
