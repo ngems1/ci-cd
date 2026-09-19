@@ -1,17 +1,6 @@
 # ============================================================
 # GitHub Actions - Standard Enterprise CI/CD Pipeline
 # File: .github/workflows/deploy.yml
-#
-# Pipeline Stages:
-#   1. Detect Environment
-#   2. Build (Docker)
-#   3. Test
-#   4. Deploy
-#
-# Deployment Strategy:
-#   - dev: Push trigger -> Auto Deploy
-#   - stage: PR Merged -> Auto Deploy
-#   - prod: PR Merged -> Manual Approval required (via GitHub Environment)
 # ============================================================
 
 name: Enterprise CI/CD Pipeline
@@ -27,6 +16,14 @@ on:
     branches:
       - stage
       - prod
+
+# -------------------------------------------------------------
+# REQUIRED FOR OIDC: Grant write permissions for OIDC token
+# -------------------------------------------------------------
+permissions:
+  id-token: write   # Required to request JWT token from GitHub OIDC
+  contents: read    # Required to checkout repository code
+  pull-requests: write
 
 env:
   APP_NAME: my-application
@@ -52,7 +49,7 @@ jobs:
           fi
 
   # -------------------------------------------------------------
-  # JOB 2: Build Application
+  # JOB 2: Build Application & Upload to AWS S3 via OIDC
   # -------------------------------------------------------------
   build:
     name: Build Application
@@ -69,6 +66,25 @@ jobs:
         run: |
           echo "Building Docker image for environment: ${{ needs.detect-environment.outputs.environment }}"
           docker build -t ${{ env.APP_NAME }}:${{ github.sha }} -f dockerfile .
+
+      - name: Export Docker Image to Tarball
+        run: |
+          mkdir -p build-output
+          docker save ${{ env.APP_NAME }}:${{ github.sha }} -o build-output/${{ env.APP_NAME }}-${{ github.sha }}.tar
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Upload Image Tarball to AWS S3
+        run: |
+          TARGET_ENV="${{ needs.detect-environment.outputs.environment }}"
+          IMAGE_FILE="${{ env.APP_NAME }}-${{ github.sha }}.tar"
+          
+          echo "Uploading ${IMAGE_FILE} to s3://${{ vars.S3_BUCKET_NAME }}/${TARGET_ENV}/"
+          aws s3 cp build-output/${IMAGE_FILE} s3://${{ vars.S3_BUCKET_NAME }}/${TARGET_ENV}/${IMAGE_FILE}
 
   # -------------------------------------------------------------
   # JOB 3: Testing Stage
@@ -110,7 +126,6 @@ jobs:
       - name: Deploy Application
         run: |
           echo "Deploying ${{ env.APP_NAME }} to target environment: ${{ needs.detect-environment.outputs.environment }}"
-          # Insert target environment deployment steps (e.g., kubectl, docker-compose, terraform)
 
   # -------------------------------------------------------------
   # JOB 5: Notification Job
