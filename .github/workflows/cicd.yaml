@@ -97,15 +97,19 @@ jobs:
         run: |
           set -euo pipefail
 
-          IMAGE_FILE="${APP_NAME}-${GITHUB_SHA}.tar"
-          SOURCE_FILE="build-output/${IMAGE_FILE}"
+          # Local build artifact source path
+          SOURCE_FILE="build-output/${APP_NAME}-${GITHUB_SHA}.tar"
+
+          # Define your custom S3 destination filename (e.g., app-dev-20260319-123456.tar or latest-dev.tar)
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          S3_FILE_NAME="${APP_NAME}-${TARGET_ENV}-${SHORT_SHA}.tar"
 
           # Clean bucket name string
           BUCKET_NAME="$(printf '%s' "$S3_BUCKET_NAME" | xargs)"
           BUCKET_NAME="${BUCKET_NAME#s3://}"
           BUCKET_NAME="${BUCKET_NAME%/}"
 
-          DESTINATION="s3://${BUCKET_NAME}/${TARGET_ENV}/${IMAGE_FILE}"
+          DESTINATION="s3://${BUCKET_NAME}/${TARGET_ENV}/${S3_FILE_NAME}"
 
           echo "Uploading ${SOURCE_FILE} to ${DESTINATION}"
           aws s3 cp "$SOURCE_FILE" "$DESTINATION"
