@@ -1,0 +1,161 @@
+# ============================================================
+# GitHub Actions - Standard Enterprise CI/CD Pipeline
+# Pipeline Flow: detect-environment -> build -> test -> deploy
+# ============================================================
+
+name: Enterprise CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - dev
+
+  pull_request:
+    types:
+      - closed
+    branches:
+      - stage
+      - prod
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  APP_NAME: my-application
+
+jobs:
+  # -------------------------------------------------------------
+  # STAGE 1: Detect Environment
+  # -------------------------------------------------------------
+  detect-environment:
+    runs-on: ubuntu-24.04
+    outputs:
+      environment: ${{ steps.detect.outputs.environment }}
+
+    steps:
+      - name: Detect Target Environment
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF_NAME}" == "dev" ]]; then
+            echo "environment=dev" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event.pull_request.base.ref }}" == "stage" ]]; then
+            echo "environment=stage" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event.pull_request.base.ref }}" == "prod" ]]; then
+            echo "environment=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "Unable to determine deployment environment."
+            exit 1
+          fi
+
+  # -------------------------------------------------------------
+  # STAGE 2: Build Application & Upload Artifact to S3 via OIDC
+  # -------------------------------------------------------------
+  build:
+    name: Build Application
+    needs: detect-environment
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build Docker Image
+        run: |
+          echo "Building Docker image for environment: ${{ needs.detect-environment.outputs.environment }}"
+          docker build \
+            -t "${{ env.APP_NAME }}:${{ github.sha }}" \
+            -f dockerfile .
+
+      - name: Export Docker Image to Tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p build-output
+          docker save \
+            "${{ env.APP_NAME }}:${{ github.sha }}" \
+            -o "build-output/${{ env.APP_NAME }}-${{ github.sha }}.tar"
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Upload Image Tarball to AWS S3
+        env:
+          TARGET_ENV: ${{ needs.detect-environment.outputs.environment }}
+          S3_BUCKET_NAME: ${{ vars.S3_BUCKET_NAME }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE_FILE="build-output/${APP_NAME}-${GITHUB_SHA}.tar"
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          S3_FILE_NAME="${APP_NAME}-${TARGET_ENV}-${SHORT_SHA}.tar"
+
+          BUCKET_NAME="$(printf '%s' "$S3_BUCKET_NAME" | xargs)"
+          BUCKET_NAME="${BUCKET_NAME#s3://}"
+          BUCKET_NAME="${BUCKET_NAME%/}"
+
+          DESTINATION="s3://${BUCKET_NAME}/${TARGET_ENV}/${S3_FILE_NAME}"
+
+          echo "Uploading ${SOURCE_FILE} to ${DESTINATION}"
+          aws s3 cp "$SOURCE_FILE" "$DESTINATION"
+
+  # -------------------------------------------------------------
+  # STAGE 3: Test Execution
+  # -------------------------------------------------------------
+  test:
+    name: Execute Tests
+    needs:
+      - detect-environment
+      - build
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Run Test Suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm test --if-present
+
+  # -------------------------------------------------------------
+  # STAGE 4: Deployment
+  # -------------------------------------------------------------
+  deploy:
+    name: Deploy
+    needs:
+      - detect-environment
+      - test
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+    runs-on: ubuntu-24.04
+
+    # Uses GitHub Environment for environment variables & manual approvals
+    environment:
+      name: ${{ needs.detect-environment.outputs.environment }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Execute Deployment
+        run: |
+          echo "Deploying ${{ env.APP_NAME }} to target environment: ${{ needs.detect-environment.outputs.environment }}"
