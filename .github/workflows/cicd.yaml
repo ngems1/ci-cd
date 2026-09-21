@@ -1,6 +1,6 @@
 # ============================================================
 # GitHub Actions - Standard Enterprise CI/CD Pipeline
-# Pipeline Flow: detect-environment -> build -> test -> deploy
+# Pipeline Flow: detect-environment -> build -> test -> deploy.
 # ===========================================================
 
 name: Enterprise CI/CD Pipeline
