@@ -44,25 +44,10 @@ The workflow automatically detects the target deployment environment based on br
 ```
 
 
-🛠️ Repository Structure:
-.
-├── .github/
-│   └── workflows/
-│       └── cicd.yml     # 4-Stage GitHub Actions CI/CD pipeline
-├── test/                # Unit/Integration test suites
-├── dockerfile           # Production multi-stage Docker build file
-├── package.json         # Node.js dependencies and scripts
-├── package-lock.json    # Dependency lock file
-└── server.js            # Node.js application entry point
-
 
 🔐 Prerequisites & Setup
 1. AWS Infrastructure & OIDC Setup
 AWS S3 Bucket: Create an S3 bucket 
-
-IAM Role: Create an IAM Role configured with OpenID Connect (OIDC) trust policy allowing
-   GitHub Actions (sts:AssumeRoleWithWebIdentity) to access the bucket without long-lived credentials.
-
 
 2. GitHub Configuration
 Navigate to Settings > Secrets and variables > Actions and configure:
@@ -72,11 +57,6 @@ Variables:
    * AWS_REGION: AWS Region (e.g., us-east-1).
    * S3_BUCKET_NAME: Target S3 bucket name.
 
-
-Navigate to Settings > Environments and configure:
-dev
-stage
-prod ==> Enable Required reviewers and assign authorized team members for manual deployment approvals.
 
 ## 🔐 How to Implement OIDC in This Project
 
