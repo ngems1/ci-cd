@@ -148,7 +148,7 @@ jobs:
       (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
     runs-on: ubuntu-24.04
 
-    # Uses GitHub Environment for environment variables & manual approvals
+    # Uses GitHub Environment for environment variables & manual approvalsssss
     environment:
       name: ${{ needs.detect-environment.outputs.environment }}
 
